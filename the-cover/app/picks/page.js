@@ -1,219 +1,250 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useUser } from "@clerk/nextjs";
 
 export default function PicksPage() {
+  const { user } = useUser();
   const [games, setGames] = useState([]);
   const [picks, setPicks] = useState({});
-  const [username, setUsername] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [lockedSpreads, setLockedSpreads] = useState({});
+
+  function isSpreadLocked() {
+    const now = new Date();
+    const easternNow = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const day = easternNow.getDay();
+    const daysSinceThursday = (day + 3) % 7;
+    const thursday = new Date(easternNow);
+    thursday.setDate(easternNow.getDate() - daysSinceThursday);
+    thursday.setHours(0, 0, 0, 0);
+    if (easternNow < thursday) thursday.setDate(thursday.getDate() - 7);
+    return easternNow >= thursday;
+  }
+
+  function hasGameStarted(game) {
+    if (!game.event_date) return false;
+    return Date.now() >= new Date(game.event_date).getTime();
+  }
 
   useEffect(() => {
     fetch("/api/games")
       .then((res) => res.json())
-      .then((data) => setGames(data.events || []));
+      .then((data) => {
+        let events = data.events || [];
+        events = events.filter((g) => {
+          if (!g.event_date) return true;
+          const d = new Date(g.event_date);
+          const eastern = new Date(d.toLocaleString("en-US", { timeZone: "America/New_York" }));
+          return eastern.getDay() !== 4;
+        });
 
-    const savedName = localStorage.getItem("cover_username");
-    const savedPicks = localStorage.getItem("cover_picks");
-    if (savedName) setUsername(savedName);
-    if (savedPicks) setPicks(JSON.parse(savedPicks));
+        if (isSpreadLocked()) {
+          const saved = JSON.parse(localStorage.getItem("thecover_locked_spreads") || "{}");
+          const next = { ...saved };
+          events.forEach((game) => {
+            if (!next[game.event_id]) {
+              const fav = getFavoriteSpreadRaw(game);
+              if (fav) next[game.event_id] = fav;
+            }
+          });
+          setLockedSpreads(next);
+          localStorage.setItem("thecover_locked_spreads", JSON.stringify(next));
+        }
+
+        setGames(events);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
   }, []);
 
-  function getTeamSpread(game, isHome) {
-    const spreadMarket = game.markets?.find((m) => m.market_id === 2);
-    if (!spreadMarket) return null;
-    const team = game.teams?.find((t) => (isHome ? t.is_home : t.is_away));
-    if (!team) return null;
-    const participant = spreadMarket.participants?.find(
-      (p) => p.type === "TYPE_TEAM" && p.id === team.team_id
-    );
-    if (!participant) return null;
-    const mainLine = participant.lines?.find((line) =>
-      Object.values(line.prices || {}).some((p) => p.is_main_line)
-    );
-    const line = mainLine || participant.lines?.[0];
-    return line?.value || null;
-  }
+  function getFavoriteSpreadRaw(game) {
+    const market = game.markets?.find((m) => m.market_id === 2);
+    if (!market?.participants) return null;
 
-  function getFavoriteSpread(game) {
-    const homeSpread = getTeamSpread(game, true);
-    const awaySpread = getTeamSpread(game, false);
+    const homeTeam = game.teams?.find((t) => t.is_home);
+    const awayTeam = game.teams?.find((t) => t.is_away);
+    if (!homeTeam || !awayTeam) return null;
+
+    let homeSpread = null;
+    let awaySpread = null;
+
+    for (const p of market.participants) {
+      if (p.type !== "TYPE_TEAM") continue;
+      const lines = p.lines || [];
+      if (!lines.length) continue;
+
+      const main = lines.find((l) =>
+        Object.values(l.prices || {}).some((pr) => pr.is_main_line)
+      ) || lines[0];
+
+      const value = main?.value;
+      if (value == null) continue;
+
+      if (String(p.id) === String(homeTeam.team_id)) homeSpread = value;
+      if (String(p.id) === String(awayTeam.team_id)) awaySpread = value;
+    }
+
     const homeNum = parseFloat(homeSpread);
     const awayNum = parseFloat(awaySpread);
 
-    if (!isNaN(homeNum) && homeNum < 0) return { team: "home", spread: homeSpread };
-    if (!isNaN(awayNum) && awayNum < 0) return { team: "away", spread: awaySpread };
+    if (!isNaN(homeNum) && homeNum < 0) {
+      return { team: "home", spread: homeSpread, name: homeTeam.name };
+    }
+    if (!isNaN(awayNum) && awayNum < 0) {
+      return { team: "away", spread: awaySpread, name: awayTeam.name };
+    }
     return null;
   }
 
-  function handlePick(gameId, side) {
-    const newPicks = { ...picks, [gameId]: side };
-    setPicks(newPicks);
-    localStorage.setItem("cover_picks", JSON.stringify(newPicks));
-  }
-
-  function handleUsernameChange(e) {
-    const name = e.target.value;
-    setUsername(name);
-    localStorage.setItem("cover_username", name);
-  }
-
-  function submitPicks() {
-    if (!username.trim()) {
-      alert("Please enter a username first");
-      return;
+  function getFavoriteSpread(game) {
+    if (isSpreadLocked() && lockedSpreads[game.event_id]) {
+      return lockedSpreads[game.event_id];
     }
-    setSubmitted(true);
+    return getFavoriteSpreadRaw(game);
   }
+
+  function handlePick(gameId, side) {
+    const game = games.find((g) => g.event_id === gameId);
+    if (game && hasGameStarted(game)) return;
+    setPicks((prev) => {
+      const next = { ...prev, [gameId]: side };
+      localStorage.setItem("thecover_picks", JSON.stringify(next));
+      return next;
+    });
+  }
+
+  const displayName = user?.username || user?.firstName || "Player";
 
   return (
-    <main
-      style={{
-        padding: "24px 16px",
-        fontFamily: "Arial, sans-serif",
-        maxWidth: "600px",
-        margin: "0 auto",
-        background: "#f5f5f7",
-        minHeight: "100vh",
-      }}
-    >
-      <a href="/" style={{ color: "#4ade80", fontSize: "14px" }}>
-        ← Back to Games
-      </a>
-
-      <h1 style={{ marginTop: "12px", marginBottom: "8px", color: "#111" }}>
-        Make Your Picks
-      </h1>
-
-      <div style={{ marginBottom: "20px" }}>
-        <label style={{ display: "block", marginBottom: "6px", color: "#333", fontSize: "14px" }}>
-          Your username
-        </label>
-        <input
-          type="text"
-          value={username}
-          onChange={handleUsernameChange}
-          placeholder="Enter a username"
-          style={{
-            padding: "10px 12px",
-            borderRadius: "6px",
-            border: "1px solid #ccc",
-            width: "100%",
-            maxWidth: "280px",
-            fontSize: "15px",
-            color: "#111",
-            background: "#fff",
-          }}
-        />
-      </div>
-
-      {games.map((game) => {
-        const awayTeam = game.teams?.find((t) => t.is_away);
-        const homeTeam = game.teams?.find((t) => t.is_home);
-        const away = awayTeam?.name || "Away";
-        const home = homeTeam?.name || "Home";
-        const selected = picks[game.event_id];
-        const favorite = getFavoriteSpread(game);
-
-        return (
-          <div
-            key={game.event_id}
-            style={{
-              background: "#111",
-              color: "#fff",
-              borderRadius: "10px",
-              padding: "14px 16px",
-              marginBottom: "12px",
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "10px" }}>
-              <div style={{ fontWeight: "600" }}>
-                {away} @ {home}
-              </div>
-              {favorite && (
-                <div style={{ fontSize: "13px", color: "#4ade80" }}>
-                  {favorite.team === "home" ? home : away} {favorite.spread}
-                </div>
-              )}
-            </div>
-
-            <div style={{ display: "flex", gap: "10px" }}>
-              <button
-                onClick={() => handlePick(game.event_id, "away")}
-                style={{
-                  flex: 1,
-                  padding: "10px",
-                  borderRadius: "6px",
-                  border: selected === "away" ? "2px solid #4ade80" : "1px solid #333",
-                  background: selected === "away" ? "#14532d" : "#1f1f1f",
-                  color: "#fff",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "6px",
-                }}
-              >
-                {awayTeam?.abbreviation && (
-                  <img
-                    src={`https://a.espncdn.com/i/teamlogos/nfl/500/${awayTeam.abbreviation.toLowerCase()}.png`}
-                    alt={away}
-                    style={{ width: "20px", height: "20px" }}
-                  />
-                )}
-                {away}
-              </button>
-              <button
-                onClick={() => handlePick(game.event_id, "home")}
-                style={{
-                  flex: 1,
-                  padding: "10px",
-                  borderRadius: "6px",
-                  border: selected === "home" ? "2px solid #4ade80" : "1px solid #333",
-                  background: selected === "home" ? "#14532d" : "#1f1f1f",
-                  color: "#fff",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "6px",
-                }}
-              >
-                {homeTeam?.abbreviation && (
-                  <img
-                    src={`https://a.espncdn.com/i/teamlogos/nfl/500/${homeTeam.abbreviation.toLowerCase()}.png`}
-                    alt={home}
-                    style={{ width: "20px", height: "20px" }}
-                  />
-                )}
-                {home}
-              </button>
-            </div>
-          </div>
-        );
-      })}
-
-      <button
-        onClick={submitPicks}
-        style={{
-          marginTop: "16px",
-          padding: "12px 20px",
-          background: "#111",
-          color: "#fff",
-          border: "none",
-          borderRadius: "8px",
-          cursor: "pointer",
-          fontWeight: "600",
-        }}
-      >
-        Submit Picks
-      </button>
-
-      {submitted && (
-        <p style={{ color: "#4ade80", marginTop: "12px", fontWeight: "600" }}>
-          Picks saved for {username}!
+    <main style={{ padding: "32px 16px", fontFamily: "system-ui, sans-serif", background: "#0a0a0a", color: "#fff", minHeight: "100vh" }}>
+      <div style={{ maxWidth: "560px", margin: "0 auto" }}>
+        <h1 style={{ marginBottom: "6px", fontSize: "32px", fontWeight: "700", textAlign: "center" }}>Make Your Picks</h1>
+        <p style={{ color: "#777", fontSize: "14px", marginBottom: "28px", textAlign: "center" }}>
+          Spreads lock at midnight ET every Thursday. You can change your pick until that game kicks off. Thursday games are not included.
         </p>
-      )}
+
+        <div style={{ marginBottom: "28px", textAlign: "center" }}>
+          <a href="/" style={{ color: "#4ade80", fontWeight: "600", textDecoration: "none" }}>
+            ← Back to Games
+          </a>
+        </div>
+
+        {user && (
+          <div style={{ textAlign: "center", marginBottom: "24px", fontSize: "15px", color: "#4ade80" }}>
+            Playing as <strong>{displayName}</strong>
+          </div>
+        )}
+
+        {loading && <p style={{ textAlign: "center" }}>Loading games...</p>}
+
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+          {games.map((game) => {
+            const awayTeam = game.teams?.find((t) => t.is_away);
+            const homeTeam = game.teams?.find((t) => t.is_home);
+            const away = awayTeam?.name || "Away";
+            const home = homeTeam?.name || "Home";
+            const favorite = getFavoriteSpread(game);
+            const currentPick = picks[game.event_id];
+            const locked = hasGameStarted(game);
+
+            return (
+              <div
+                key={game.event_id}
+                style={{
+                  background: "#111",
+                  borderRadius: "12px",
+                  padding: "18px",
+                  border: "1px solid #222",
+                  opacity: locked ? 0.65 : 1,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                  {awayTeam?.abbreviation && (
+                    <img
+                      src={`https://a.espncdn.com/i/teamlogos/nfl/500/${awayTeam.abbreviation.toLowerCase()}.png`}
+                      alt=""
+                      style={{ width: "20px", height: "20px" }}
+                    />
+                  )}
+                  <span style={{ fontWeight: "600" }}>{away}</span>
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    marginBottom: "12px",
+                    background: "#1e3a2f",
+                    padding: "6px 10px",
+                    borderRadius: "6px",
+                  }}
+                >
+                  {homeTeam?.abbreviation && (
+                    <img
+                      src={`https://a.espncdn.com/i/teamlogos/nfl/500/${homeTeam.abbreviation.toLowerCase()}.png`}
+                      alt=""
+                      style={{ width: "20px", height: "20px" }}
+                    />
+                  )}
+                  <span style={{ fontWeight: "600" }}>{home}</span>
+                </div>
+
+                {favorite ? (
+                  <div style={{ fontSize: "14px", marginBottom: "12px", color: "#ccc" }}>
+                    Favorite: <strong>{favorite.name}</strong> {favorite.spread}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: "14px", marginBottom: "12px", color: "#555" }}>
+                    Spread not available
+                  </div>
+                )}
+
+                {locked && (
+                  <div style={{ fontSize: "13px", color: "#fbbf24", marginBottom: "10px" }}>
+                    Game started — pick locked
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: "8px" }}>
+                  <button
+                    onClick={() => handlePick(game.event_id, "away")}
+                    disabled={locked}
+                    style={{
+                      flex: 1,
+                      padding: "11px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: currentPick === "away" ? "#4ade80" : "#222",
+                      color: currentPick === "away" ? "#111" : "#fff",
+                      fontWeight: "600",
+                      cursor: locked ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {away}
+                  </button>
+                  <button
+                    onClick={() => handlePick(game.event_id, "home")}
+                    disabled={locked}
+                    style={{
+                      flex: 1,
+                      padding: "11px",
+                      borderRadius: "8px",
+                      border: "none",
+                      background: currentPick === "home" ? "#4ade80" : "#222",
+                      color: currentPick === "home" ? "#111" : "#fff",
+                      fontWeight: "600",
+                      cursor: locked ? "not-allowed" : "pointer",
+                    }}
+                  >
+                    {home}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
     </main>
   );
 }
