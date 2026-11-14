@@ -7,6 +7,7 @@ export default function Home() {
   const [games, setGames] = useState([]);
   const [loading, setLoading] = useState(true);
   const [lockedSpreads, setLockedSpreads] = useState({});
+  const [userPicks, setUserPicks] = useState({});
 
   function isSpreadLocked() {
     const now = new Date();
@@ -21,6 +22,9 @@ export default function Home() {
   }
 
   useEffect(() => {
+    const saved = localStorage.getItem("thecover_picks");
+    if (saved) setUserPicks(JSON.parse(saved));
+
     fetch("/api/games")
       .then((res) => res.json())
       .then((data) => {
@@ -33,8 +37,8 @@ export default function Home() {
         });
 
         if (isSpreadLocked()) {
-          const saved = JSON.parse(localStorage.getItem("thecover_locked_spreads") || "{}");
-          const next = { ...saved };
+          const savedSpreads = JSON.parse(localStorage.getItem("thecover_locked_spreads") || "{}");
+          const next = { ...savedSpreads };
           events.forEach((game) => {
             if (!next[game.event_id]) {
               const fav = getFavoriteSpread(game);
@@ -187,6 +191,7 @@ export default function Home() {
             const favorite = getFavoriteSpread(game);
             const cover = getCoverResult(game);
             const isFinal = game.score?.event_status === "STATUS_FINAL";
+            const userPick = userPicks[game.event_id];
 
             let borderColor = "#222";
             if (isFinal && cover && cover !== "push") {
@@ -205,7 +210,18 @@ export default function Home() {
                   textAlign: "left",
                 }}
               >
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: "600", fontSize: "15px" }}>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    fontWeight: "600",
+                    fontSize: "15px",
+                    background: userPick === "away" ? "#1e3a2f" : "transparent",
+                    padding: userPick === "away" ? "4px 8px" : "0",
+                    borderRadius: "6px",
+                  }}
+                >
                   {awayTeam?.abbreviation && (
                     <img
                       src={`https://a.espncdn.com/i/teamlogos/nfl/500/${awayTeam.abbreviation.toLowerCase()}.png`}
@@ -223,8 +239,8 @@ export default function Home() {
                     fontWeight: "600",
                     fontSize: "15px",
                     margin: "6px 0 10px",
-                    background: "#1e3a2f",
-                    padding: "6px 8px",
+                    background: userPick === "home" ? "#1e3a2f" : "transparent",
+                    padding: userPick === "home" ? "4px 8px" : "0",
                     borderRadius: "6px",
                   }}
                 >
