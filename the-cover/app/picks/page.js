@@ -7,6 +7,7 @@ export default function PicksPage() {
   const { user } = useUser();
   const [games, setGames] = useState([]);
   const [picks, setPicks] = useState({});
+  const [submitted, setSubmitted] = useState(false);
   const [loading, setLoading] = useState(true);
   const [lockedSpreads, setLockedSpreads] = useState({});
 
@@ -56,6 +57,9 @@ export default function PicksPage() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+
+    const savedPicks = localStorage.getItem("thecover_picks");
+    if (savedPicks) setPicks(JSON.parse(savedPicks));
   }, []);
 
   function getFavoriteSpreadRaw(game) {
@@ -109,9 +113,14 @@ export default function PicksPage() {
     if (game && hasGameStarted(game)) return;
     setPicks((prev) => {
       const next = { ...prev, [gameId]: side };
-      localStorage.setItem("thecover_picks", JSON.stringify(next));
       return next;
     });
+    setSubmitted(false);
+  }
+
+  function submitPicks() {
+    localStorage.setItem("thecover_picks", JSON.stringify(picks));
+    setSubmitted(true);
   }
 
   const displayName = user?.username || user?.firstName || "Player";
@@ -138,7 +147,7 @@ export default function PicksPage() {
 
         {loading && <p style={{ textAlign: "center" }}>Loading games...</p>}
 
-        <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginBottom: "24px" }}>
           {games.map((game) => {
             const awayTeam = game.teams?.find((t) => t.is_away);
             const homeTeam = game.teams?.find((t) => t.is_home);
@@ -243,6 +252,29 @@ export default function PicksPage() {
               </div>
             );
           })}
+        </div>
+
+        <div style={{ textAlign: "center" }}>
+          <button
+            onClick={submitPicks}
+            style={{
+              padding: "14px 32px",
+              background: "#4ade80",
+              color: "#111",
+              border: "none",
+              borderRadius: "8px",
+              fontWeight: "700",
+              fontSize: "16px",
+              cursor: "pointer",
+            }}
+          >
+            Submit Picks
+          </button>
+          {submitted && (
+            <div style={{ marginTop: "12px", color: "#4ade80", fontWeight: "600" }}>
+              Picks submitted!
+            </div>
+          )}
         </div>
       </div>
     </main>
